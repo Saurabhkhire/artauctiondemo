@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Art Auction Demo — Technical Documentation</title>
+  <style>
+    body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; line-height: 1.35; margin: 1in; color: #222; }
+    h1 { font-size: 22pt; border-bottom: 2pt solid #333; padding-bottom: 6pt; }
+    h2 { font-size: 16pt; margin-top: 18pt; color: #1a1a1a; }
+    h3 { font-size: 13pt; margin-top: 14pt; }
+    table { border-collapse: collapse; width: 100%; margin: 10pt 0; font-size: 10pt; }
+    th, td { border: 1pt solid #666; padding: 6pt 8pt; vertical-align: top; text-align: left; }
+    th { background: #f0f0f0; font-weight: bold; }
+    code, .mono { font-family: Consolas, monospace; font-size: 9pt; }
+    .note { background: #fff8e6; border-left: 4pt solid #c90; padding: 8pt 12pt; margin: 10pt 0; }
+    ul { margin-top: 6pt; }
+    p { margin: 8pt 0; }
+  </style>
+</head>
+<body>
+
+<h1>Art Auction Gallery Demo — Technical Documentation</h1>
+<p><strong>Project:</strong> Momas High Society Art Auction (artauctiondemo)<br />
+<strong>Generated for:</strong> Word import — open this file in Microsoft Word, then <em>File → Save As → Word Document (*.docx)</em>.</p>
+
+<h2>1. Use case</h2>
+<ul>
+  <li><strong>Gallery / saleroom demo:</strong> Artists upload works (max 10 each); admins schedule timed auctions with opening bids; buyers pre-register with a budget cap, then bid while the auction is live; when the end time passes, the server finalizes sales (highest bid per lot wins).</li>
+  <li><strong>Virtual economy:</strong> Buyers start with a self-chosen virtual balance at registration; settlement debits buyers and credits artists.</li>
+  <li><strong>Roles:</strong> Artist, Buyer, Admin — no email verification in this demo.</li>
+  <li><strong>Future payments:</strong> Registration captures optional Stripe intent (checkbox + notes only; no Stripe API calls).</li>
+</ul>
+
+<h2>2. Tech stack</h2>
+<table>
+  <tr><th>Layer</th><th>Technology</th></tr>
+  <tr><td>Frontend</td><td>React 18, React Router 6, Vite 5, plain CSS (no UI framework)</td></tr>
+  <tr><td>Backend</td><td>Node.js, Express 4, ES modules</td></tr>
+  <tr><td>Database</td><td>SQLite via better-sqlite3 (file: <span class="mono">server/data/auction.db</span>)</td></tr>
+  <tr><td>Auth</td><td>JWT (Bearer token), bcryptjs password hashing</td></tr>
+  <tr><td>Uploads</td><td>Multer → <span class="mono">server/uploads/</span></td></tr>
+  <tr><td>Dev tooling</td><td>concurrently (root <span class="mono">npm run dev</span>), Vite proxy to API</td></tr>
+</table>
+
+<h2>3. Architecture</h2>
+<h3>3.1 Logical layers</h3>
+<ul>
+  <li><strong>Presentation (browser):</strong> SPA on Vite dev server (port 5173); production build is static assets in <span class="mono">client/dist</span>.</li>
+  <li><strong>API:</strong> Express REST on 127.0.0.1:4000 (configurable <span class="mono">PORT</span>, <span class="mono">HOST</span>).</li>
+  <li><strong>Domain logic:</strong> Auction lifecycle (scheduled → live → ended), bid validation, finalize → <span class="mono">art_sales</span>.</li>
+  <li><strong>Persistence:</strong> SQLite tables for users, arts, auctions, lots, registrations, bids, sales.</li>
+</ul>
+<h3>3.2 Request flow (typical)</h3>
+<p>Browser → Vite proxy (<span class="mono">/api</span>, <span class="mono">/uploads</span>) → Express → middleware (<span class="mono">refreshAllAuctions</span>) → route handler → better-sqlite3 → JSON response.</p>
+<h3>3.3 Key server behaviors</h3>
+<ul>
+  <li><strong>refreshAllAuctions:</strong> On most requests, updates auction <span class="mono">status</span> from wall-clock time; calls <span class="mono">finalizeAuction</span> when end time has passed and not yet <span class="mono">finalized</span>.</li>
+  <li><strong>finalizeAuction:</strong> Transaction: for each lot, insert <span class="mono">art_sales</span> if there is a high bid, else return art to <span class="mono">available</span>; mark auction <span class="mono">finalized</span>.</li>
+</ul>
+
+<h2>4. Workflows (every main workflow)</h2>
+<table>
+  <tr><th>#</th><th>Actor</th><th>Workflow</th><th>Main API / UI</th></tr>
+  <tr><td>W1</td><td>Anyone</td><td>Register</td><td><span class="mono">POST /api/register</span> — Register page; optional Stripe flags; buyers send <span class="mono">virtual_balance</span></td></tr>
+  <tr><td>W2</td><td>Anyone</td><td>Login</td><td><span class="mono">POST /api/login</span> — Login page; JWT stored in <span class="mono">localStorage</span></td></tr>
+  <tr><td>W3</td><td>Artist</td><td>Upload artwork</td><td><span class="mono">POST /api/arts</span> (multipart) — Studio; max 10 per artist</td></tr>
+  <tr><td>W4</td><td>Admin</td><td>Add inventory on behalf of artist</td><td><span class="mono">POST /api/arts</span> with <span class="mono">artist_id</span> — Curator “Add inventory”</td></tr>
+  <tr><td>W5</td><td>Admin</td><td>Create auction</td><td><span class="mono">POST /api/auctions</span> — select available lots, opening bid per lot, start/end ISO times</td></tr>
+  <tr><td>W6</td><td>Buyer</td><td>Pre-register</td><td><span class="mono">POST /api/auctions/:id/register</span> — Saleroom, Auction list, or Auction room; only while <span class="mono">scheduled</span> and before <span class="mono">start_at</span></td></tr>
+  <tr><td>W7</td><td>Buyer</td><td>Place bid</td><td><span class="mono">POST /api/auctions/:id/bid</span> — Auction room while <span class="mono">live</span>; must be pre-registered; bid ≥ min increment; sum of winning bids ≤ budget cap and ≤ virtual balance</td></tr>
+  <tr><td>W8</td><td>System</td><td>Finalize auction</td><td><span class="mono">refreshAllAuctions</span> / <span class="mono">GET /api/auctions/:id</span> — writes <span class="mono">art_sales</span>, updates balances</td></tr>
+  <tr><td>W9</td><td>Buyer</td><td>View purchases</td><td><span class="mono">GET /api/me/purchases</span> — Saleroom “Art you bought”; calls <span class="mono">refreshAllAuctions</span> first</td></tr>
+  <tr><td>W10</td><td>Dev / Ops</td><td>Reset local data</td><td><span class="mono">npm run reset-db</span> in <span class="mono">server/</span> — deletes DB + upload files</td></tr>
+</table>
+
+<h2>5. Code structure — Frontend</h2>
+<p>Format: <span class="mono">filename</span> — methods: <span class="mono">methodName(params)</span> # one-line description</p>
+<table>
+  <tr><th>File</th><th>Methods</th></tr>
+  <tr><td class="mono">main.jsx</td><td>Bootstraps React root, BrowserRouter, AuthProvider # app entry</td></tr>
+  <tr><td class="mono">App.jsx</td><td><span class="mono">App()</span> # route table with Layout and Protected wrappers</td></tr>
+  <tr><td class="mono">api.js</td><td><span class="mono">getToken()</span> # reads JWT from localStorage<br /><span class="mono">api(path, options)</span> # fetch wrapper with auth + JSON errors<br /><span class="mono">assetUrl(path)</span> # prefixes relative upload paths for &lt;img src&gt;</td></tr>
+  <tr><td class="mono">context/AuthContext.jsx</td><td><span class="mono">AuthProvider({ children })</span> # holds user state, token lifecycle<br /><span class="mono">refreshUser()</span> # GET /api/me and sync state<br /><span class="mono">login(email, password)</span> # POST /api/login, store token<br /><span class="mono">register(payload)</span> # POST /api/register, store token<br /><span class="mono">logout()</span> # clear token and user<br /><span class="mono">useAuth()</span> # context hook for consumers</td></tr>
+  <tr><td class="mono">components/Layout.jsx</td><td><span class="mono">Layout({ children })</span> # header nav by role, balance display, footer</td></tr>
+  <tr><td class="mono">components/Protected.jsx</td><td><span class="mono">Protected({ children, roles })</span> # redirect if unauthenticated or wrong role</td></tr>
+  <tr><td class="mono">pages/Home.jsx</td><td><span class="mono">Home()</span> # marketing hero and role shortcuts</td></tr>
+  <tr><td class="mono">pages/Login.jsx</td><td><span class="mono">Login()</span> # form; <span class="mono">onSubmit(e)</span> # calls login(), navigate by role</td></tr>
+  <tr><td class="mono">pages/Register.jsx</td><td><span class="mono">Register()</span> # form; <span class="mono">onSubmit(e)</span> # calls register(payload), navigate by role</td></tr>
+  <tr><td class="mono">pages/Artist.jsx</td><td><span class="mono">Artist()</span> # studio UI<br /><span class="mono">load()</span> # GET /api/arts/mine<br /><span class="mono">onSubmit(e)</span> # POST multipart new art</td></tr>
+  <tr><td class="mono">pages/Admin.jsx</td><td><span class="mono">defaultLotState()</span> # initial checkbox + opening bid state per lot<br /><span class="mono">Admin()</span> # curator desk<br /><span class="mono">load()</span> # selectable arts, auctions, artists list<br /><span class="mono">toggleArt(id)</span> # toggle lot selection<br /><span class="mono">updateLot(id, field, rawValue)</span> # update opening bid field<br /><span class="mono">addInventory(e)</span> # POST /api/arts as admin<br /><span class="mono">createAuction(e)</span> # POST /api/auctions</td></tr>
+  <tr><td class="mono">pages/Buyer.jsx</td><td><span class="mono">Buyer()</span> # saleroom + purchases<br /><span class="mono">load()</span> # GET auctions then purchases sequentially<br /><span class="mono">registerForAuction(id)</span> # POST register with budget from state</td></tr>
+  <tr><td class="mono">pages/AuctionList.jsx</td><td><span class="mono">AuctionList()</span> # grid of auctions<br /><span class="mono">load()</span> # GET /api/auctions<br /><span class="mono">registerForAuction(id, e)</span> # pre-register from card form</td></tr>
+  <tr><td class="mono">pages/AuctionRoom.jsx</td><td><span class="mono">AuctionRoom()</span> # single auction detail + lots<br /><span class="mono">load()</span> # GET /api/auctions/:id<br /><span class="mono">placeBid(artId, preset)</span> # POST bid with preset or custom amount<br /><span class="mono">preRegisterAuction(e)</span> # POST register from inline form</td></tr>
+</table>
+
+<h2>6. Code structure — Backend</h2>
+<table>
+  <tr><th>File</th><th>Symbols / routes</th></tr>
+  <tr><td class="mono">server/src/index.js</td><td>Express app, multer, constants <span class="mono">LOT_BID_NO_CEILING</span><br />
+    <span class="mono">asyncHandler(fn)</span> # wraps async routes to forward errors to Express<br />
+    <span class="mono">POST /api/register</span> # create user, hash password, JWT<br />
+    <span class="mono">POST /api/login</span> # verify credentials, JWT<br />
+    <span class="mono">GET /api/me</span> # current profile<br />
+    <span class="mono">GET /api/arts/mine</span> # artist’s arts<br />
+    <span class="mono">GET /api/admin/artists</span> # artist directory for admin uploads<br />
+    <span class="mono">POST /api/arts</span> # artist or admin multipart upload<br />
+    <span class="mono">GET /api/arts/selectable</span> # available inventory for new auction<br />
+    <span class="mono">POST /api/auctions</span> # create auction + lots transaction<br />
+    <span class="mono">GET /api/auctions</span> # list; buyers get <span class="mono">my_registration</span> per row<br />
+    <span class="mono">GET /api/auctions/:id</span> # detail + items + optional registration<br />
+    <span class="mono">POST /api/auctions/:id/register</span> # buyer pre-register + budget_cap<br />
+    <span class="mono">POST /api/auctions/:id/bid</span> # place bid with rules<br />
+    <span class="mono">GET /api/me/purchases</span> # buyer’s <span class="mono">art_sales</span> joined rows<br />
+    Error middleware # JSON 500<br />
+    <span class="mono">app.listen(PORT, HOST)</span> # default 127.0.0.1:4000</td></tr>
+  <tr><td class="mono">server/src/middleware/auth.js</td><td><span class="mono">signToken(payload)</span> # JWT sign 7d<br /><span class="mono">authOptional</span> # set req.user or null<br /><span class="mono">requireAuth</span> # 401 if no valid Bearer<br /><span class="mono">requireRole(...roles)</span> # 403 if role mismatch</td></tr>
+  <tr><td class="mono">server/src/auctionEngine.js</td><td><span class="mono">refreshAuctionRow(auction)</span> # sync status vs now<br /><span class="mono">getCurrentHighBid(auctionId, artId)</span> # top bid row<br /><span class="mono">sumWinningCommitment(auctionId, userId)</span> # sum high bids where user leads<br /><span class="mono">finalizeAuction(auctionId)</span> # transactional settlement<br /><span class="mono">refreshAllAuctions()</span> # loop open auctions, finalize if ended</td></tr>
+  <tr><td class="mono">server/src/db.js</td><td><span class="mono">db</span> # Database instance<br /><span class="mono">initSchema()</span> # CREATE TABLE IF NOT EXISTS + indexes<br />Runs <span class="mono">initSchema()</span> on import</td></tr>
+  <tr><td class="mono">server/scripts/reset-database.js</td><td>Deletes SQLite file (+ WAL/SHM) and clears uploads # full local reset</td></tr>
+</table>
+
+<h2>7. “POJO” / data shapes (JavaScript — no getter/setter classes)</h2>
+<div class="note">This stack uses <strong>plain objects</strong> and JSON, not Java POJOs. Below: logical “entities” and important fields (as returned by API or stored in DB).</div>
+<table>
+  <tr><th>Shape</th><th>Fields (name — meaning / notes)</th></tr>
+  <tr><td>User (DB + /api/me)</td><td><span class="mono">id</span> — PK; <span class="mono">name</span>; <span class="mono">email</span> unique; <span class="mono">password_hash</span> — never sent to client; <span class="mono">role</span> — artist | buyer | admin; <span class="mono">virtual_balance</span>; <span class="mono">use_stripe_future</span> 0/1; <span class="mono">stripe_placeholder</span>; <span class="mono">created_at</span></td></tr>
+  <tr><td>JWT payload</td><td><span class="mono">id</span> — user id; <span class="mono">role</span> — for authorization</td></tr>
+  <tr><td>Art (DB)</td><td><span class="mono">id</span>; <span class="mono">artist_id</span> FK; <span class="mono">title</span>; <span class="mono">description</span>; <span class="mono">image_path</span>; <span class="mono">status</span> available|in_auction|sold; <span class="mono">created_at</span></td></tr>
+  <tr><td>Auction (DB + API)</td><td><span class="mono">id</span>; <span class="mono">name</span>; <span class="mono">description</span>; <span class="mono">start_at</span>; <span class="mono">end_at</span> ISO; <span class="mono">status</span> scheduled|live|ended; <span class="mono">finalized</span> 0/1; <span class="mono">created_by</span>; <span class="mono">created_at</span>; API may add <span class="mono">my_registration</span> for buyers on list</td></tr>
+  <tr><td>Auction lot (auction_arts)</td><td><span class="mono">auction_id</span>; <span class="mono">art_id</span>; <span class="mono">starting_bid</span>; <span class="mono">max_bid_allowed</span> — large sentinel = no practical per-lot cap</td></tr>
+  <tr><td>Auction item (API GET :id)</td><td>Art fields + <span class="mono">starting_bid</span>; <span class="mono">max_bid_allowed</span> null when uncapped; <span class="mono">current_bid</span>; <span class="mono">current_bidder_*</span></td></tr>
+  <tr><td>Registration</td><td><span class="mono">auction_id</span>; <span class="mono">user_id</span>; <span class="mono">budget_cap</span> — max total winning bid exposure</td></tr>
+  <tr><td>Bid</td><td><span class="mono">auction_id</span>; <span class="mono">art_id</span>; <span class="mono">user_id</span>; <span class="mono">amount</span>; <span class="mono">created_at</span></td></tr>
+  <tr><td>Art sale (purchase record)</td><td><span class="mono">auction_id</span>; <span class="mono">art_id</span> unique; <span class="mono">buyer_id</span>; <span class="mono">final_price</span>; joins expose <span class="mono">title</span>, <span class="mono">image_path</span>, <span class="mono">auction_name</span></td></tr>
+</table>
+
+<h2>8. Database tables and columns</h2>
+<table>
+  <tr><th>Table</th><th>Columns</th></tr>
+  <tr><td><span class="mono">users</span></td><td>id PK AI, name, email UNIQUE, password_hash, role CHECK(artist|buyer|admin), virtual_balance REAL DEFAULT 10000, use_stripe_future INT DEFAULT 0, stripe_placeholder, created_at</td></tr>
+  <tr><td><span class="mono">arts</span></td><td>id PK AI, artist_id FK→users, title, description, image_path, status CHECK(available|in_auction|sold) DEFAULT available, created_at</td></tr>
+  <tr><td><span class="mono">auctions</span></td><td>id PK AI, name, description, start_at, end_at, status CHECK(scheduled|live|ended), finalized INT DEFAULT 0, created_by FK→users, created_at</td></tr>
+  <tr><td><span class="mono">auction_arts</span></td><td>id PK AI, auction_id FK→auctions ON DELETE CASCADE, art_id FK→arts, starting_bid REAL DEFAULT 0, max_bid_allowed REAL NOT NULL</td></tr>
+  <tr><td><span class="mono">auction_registrations</span></td><td>id PK AI, auction_id FK CASCADE, user_id FK→users, budget_cap REAL NOT NULL, UNIQUE(auction_id, user_id)</td></tr>
+  <tr><td><span class="mono">bids</span></td><td>id PK AI, auction_id FK CASCADE, art_id, user_id FK→users, amount REAL, created_at</td></tr>
+  <tr><td><span class="mono">art_sales</span></td><td>id PK AI, auction_id FK→auctions, art_id FK UNIQUE→arts, buyer_id FK→users, final_price REAL, created_at</td></tr>
+</table>
+<p><strong>Indexes:</strong> <span class="mono">idx_bids_lot (auction_id, art_id)</span>; <span class="mono">idx_arts_artist (artist_id)</span>; <span class="mono">idx_auctions_times (start_at, end_at)</span></p>
+
+<h2>9. Additional topics (recommended)</h2>
+<h3>9.1 Security notes (demo level)</h3>
+<ul>
+  <li>Change <span class="mono">JWT_SECRET</span> via environment for any shared deployment.</li>
+  <li>No rate limiting, CSRF protection, or HTTPS enforcement in this demo.</li>
+  <li>File uploads: type/size limited by Multer; no virus scanning.</li>
+</ul>
+<h3>9.2 Configuration</h3>
+<table>
+  <tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+  <tr><td class="mono">PORT</td><td>4000</td><td>API port</td></tr>
+  <tr><td class="mono">HOST</td><td>127.0.0.1</td><td>Bind address (use 0.0.0.0 for LAN)</td></tr>
+  <tr><td class="mono">JWT_SECRET</td><td>dev string in code</td><td>Signing key</td></tr>
+</table>
+<h3>9.3 Run commands</h3>
+<ul>
+  <li><strong>Both services:</strong> repo root <span class="mono">npm install</span> then <span class="mono">npm run dev</span></li>
+  <li><strong>API only:</strong> <span class="mono">cd server && npm run dev</span></li>
+  <li><strong>Client only:</strong> <span class="mono">cd client && npm run dev</span></li>
+  <li><strong>Reset DB:</strong> <span class="mono">cd server && npm run reset-db</span></li>
+</ul>
+<h3>9.4 Known limitations / future work</h3>
+<ul>
+  <li>Real-time bids via polling only (no WebSocket).</li>
+  <li>Stripe: UI placeholder only.</li>
+  <li>Single SQLite file — not horizontally scaled.</li>
+  <li>No audit log or admin “undo” for finalized auctions.</li>
+</ul>
+
+<p style="margin-top: 24pt; font-size: 9pt; color: #555;">End of document.</p>
+</body>
+</html>
