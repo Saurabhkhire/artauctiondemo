@@ -22,15 +22,23 @@ function removeIfExists(p) {
     if (fs.existsSync(p)) {
       fs.unlinkSync(p);
       console.log('Removed:', p);
+      return true;
     }
   } catch (e) {
     console.error('Could not remove', p, e.message);
+    if (e.code === 'EBUSY' || e.code === 'EPERM') {
+      console.error('  → Stop the API server first (the terminal running "npm run dev" / "node src/index.js"), then run this script again.');
+    }
+    return false;
   }
+  return true;
 }
 
 removeIfExists(dbPath);
 removeIfExists(dbPath + '-wal');
 removeIfExists(dbPath + '-shm');
+const anyDbLeft =
+  fs.existsSync(dbPath) || fs.existsSync(dbPath + '-wal') || fs.existsSync(dbPath + '-shm');
 
 // Optional: clear uploaded images (keeps folder)
 if (fs.existsSync(uploadsDir)) {
@@ -40,4 +48,9 @@ if (fs.existsSync(uploadsDir)) {
   }
 }
 
-console.log('Local auction data cleared. Restart the server to recreate an empty database.');
+if (!anyDbLeft) {
+  console.log('Local auction data cleared. Start the server again to recreate an empty database.');
+} else {
+  console.error('\nDatabase files are still present. After stopping the server, run: node scripts\\reset-database.js');
+  process.exitCode = 1;
+}

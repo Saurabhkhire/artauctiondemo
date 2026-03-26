@@ -181,8 +181,27 @@ async function pgInitSchema(pool) {
   }
 }
 
+/** Serialize all use of one better-sqlite3 connection. Awaiting inside a transaction yields the event loop; without this, other requests could BEGIN while a transaction is already open. */
+function createSqliteSerialQueue() {
+  let chain = Promise.resolve();
+  return function enqueue(task) {
+    const p = chain.then(
+      () => task(),
+      () => task()
+    );
+    chain = p.then(
+      () => {},
+      () => {}
+    );
+    return p;
+  };
+}
+
 function makeSqliteAdapter(sqlite) {
-  return {
+  const enqueue = createSqliteSerialQueue();
+  // Passed to transaction(fn) — runs on the same connection but must NOT go through enqueue
+  // (would deadlock: outer transaction holds the queue until fn completes).
+  const direct = {
     dialect: 'sqlite',
     async get(sql, params = []) {
       return sqlite.prepare(sql).get(...params) ?? null;
@@ -194,11 +213,38 @@ function makeSqliteAdapter(sqlite) {
       const r = sqlite.prepare(sql).run(...params);
       return { changes: r.changes, lastInsertRowid: r.lastInsertRowid };
     },
+  };
+
+  const adapter = {
+    dialect: 'sqlite',
+    async get(sql, params = []) {
+      return enqueue(() => direct.get(sql, params));
+    },
+    async all(sql, params = []) {
+      return enqueue(() => direct.all(sql, params));
+    },
+    async run(sql, params = []) {
+      return enqueue(() => direct.run(sql, params));
+    },
     async transaction(fn) {
-      const tx = sqlite.transaction(() => fn(this));
-      return tx();
+      return enqueue(async () => {
+        sqlite.exec('BEGIN IMMEDIATE');
+        try {
+          const out = await fn(direct);
+          sqlite.exec('COMMIT');
+          return out;
+        } catch (e) {
+          try {
+            sqlite.exec('ROLLBACK');
+          } catch {
+            /* ignore rollback errors */
+          }
+          throw e;
+        }
+      });
     },
   };
+  return adapter;
 }
 
 function makePgAdapter(pool, client = null) {
